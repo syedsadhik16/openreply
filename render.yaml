@@ -1,0 +1,98 @@
+services:
+  - type: web
+    name: openreply-web
+    runtime: node
+    region: singapore
+    plan: 0.5c-512mb
+    buildCommand: npm ci && npm run db:generate && npm run build
+    preDeployCommand: npm run db:migrate
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22.11.0"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: openreply-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: openreply-redis
+          type: keyvalue
+          property: connectionString
+      - fromGroup: openreply-shared
+      - key: NEXTAUTH_URL
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: ALLOWED_EMAILS
+        sync: false
+      - key: INSTAGRAM_APP_ID
+        sync: false
+      - key: INSTAGRAM_APP_SECRET
+        sync: false
+      - key: FACEBOOK_APP_SECRET
+        sync: false
+      - key: WEBHOOK_VERIFY_TOKEN
+        sync: false
+      - key: META_GRAPH_API_VERSION
+        value: v25.0
+
+  - type: worker
+    name: openreply-worker
+    runtime: node
+    region: singapore
+    plan: 0.5c-512mb
+    buildCommand: npm ci && npm run db:generate
+    startCommand: npm run worker
+    envVars:
+      - key: NODE_VERSION
+        value: "22.11.0"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: openreply-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: openreply-redis
+          type: keyvalue
+          property: connectionString
+      - fromGroup: openreply-shared
+      - key: NEXTAUTH_URL
+        sync: false
+      - key: INSTAGRAM_APP_ID
+        sync: false
+      - key: INSTAGRAM_APP_SECRET
+        sync: false
+      - key: FACEBOOK_APP_SECRET
+        sync: false
+      - key: META_GRAPH_API_VERSION
+        value: v25.0
+
+  - type: keyvalue
+    name: openreply-redis
+    region: singapore
+    plan: 256mb
+    ipAllowList: []
+    maxmemoryPolicy: noeviction
+    persistenceMode: journal-snapshot
+
+databases:
+  - name: openreply-postgres
+    region: singapore
+    plan: 0.1c-256mb
+    postgresMajorVersion: "17"
+    databaseName: openreply
+    user: openreply
+
+envVarGroups:
+  - name: openreply-shared
+    envVars:
+      - key: NEXTAUTH_SECRET
+        generateValue: true
+      - key: CRON_SECRET
+        generateValue: true
+      - key: ENCRYPTION_KEY
+        generateValue: true
