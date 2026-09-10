@@ -1,6 +1,8 @@
+import { createHash } from "crypto";
 import { z } from "zod";
 
 const HEX_32_BYTE = /^[a-f0-9]{64}$/i;
+const MIN_ENCRYPTION_SECRET_LENGTH = 32;
 
 function readEnv(name: string): string {
   const value = process.env[name];
@@ -15,15 +17,31 @@ export function requireEnv(name: string): string {
 }
 
 export function getBaseUrl(): string {
-  return process.env.NEXTAUTH_URL ?? "http://localhost:3000";
+  return (
+    process.env.NEXTAUTH_URL ??
+    process.env.RENDER_EXTERNAL_URL ??
+    "http://localhost:3000"
+  );
 }
 
+/**
+ * Return a stable 32-byte key as hex.
+ *
+ * Existing self-hosters can continue supplying the documented 64-character
+ * hex value. Managed platforms such as Render commonly generate a strong
+ * base64 secret instead; in that case derive a deterministic 32-byte key via
+ * SHA-256. This lets the web app and worker share one generated secret without
+ * ever committing encryption material to the repository.
+ */
 export function getEncryptionKeyHex(): string {
   const value = readEnv("ENCRYPTION_KEY");
-  if (!HEX_32_BYTE.test(value)) {
-    throw new Error("ENCRYPTION_KEY must be a 32-byte hex string");
+  if (HEX_32_BYTE.test(value)) return value;
+  if (value.length < MIN_ENCRYPTION_SECRET_LENGTH) {
+    throw new Error(
+      "ENCRYPTION_KEY must be a 32-byte hex string or a secret of at least 32 characters"
+    );
   }
-  return value;
+  return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
 // Env vars that must be present before an Instagram OAuth round trip can even
@@ -40,9 +58,10 @@ export function getMissingInstagramOAuthEnv(): string[] {
   return INSTAGRAM_OAUTH_ENV.filter((name) => {
     const value = process.env[name];
     if (!value) return true;
-    // A malformed key fails later inside encryptToken, after the user has
-    // already round-tripped through Meta — catch the bad format here instead.
-    return name === "ENCRYPTION_KEY" && !HEX_32_BYTE.test(value);
+    if (name !== "ENCRYPTION_KEY") return false;
+    return (
+      !HEX_32_BYTE.test(value) && value.length < MIN_ENCRYPTION_SECRET_LENGTH
+    );
   });
 }
 
@@ -77,7 +96,11 @@ export const serverEnvSchema = z.object({
   NEXTAUTH_SECRET: z.string().min(16),
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
-  ENCRYPTION_KEY: z.string().regex(HEX_32_BYTE),
+  ENCRYPTION_KEY: z.string().refine(
+    (value) =>
+      HEX_32_BYTE.test(value) || value.length >= MIN_ENCRYPTION_SECRET_LENGTH,
+    "ENCRYPTION_KEY must be 64 hex characters or at least 32 characters"
+  ),
 });
 
 export function validateCoreEnv() {
