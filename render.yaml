@@ -1,16 +1,16 @@
 services:
   - type: web
-    name: openreply-7a3f91c2e5
+    name: openreply
     runtime: node
     region: singapore
-    plan: 0.5c-512mb
-    buildCommand: npm ci && npm run db:generate && npm run build
+    plan: free
+    buildCommand: npm ci --include=dev && npm run db:generate && npm run build
     preDeployCommand: npm run db:migrate
     startCommand: npm start
     healthCheckPath: /api/live
     envVars:
       - key: NODE_VERSION
-        value: "22.11.0"
+        value: "22.12.0"
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
@@ -24,7 +24,7 @@ services:
           property: connectionString
       - fromGroup: openreply-shared
       - key: NEXTAUTH_URL
-        value: https://openreply-7a3f91c2e5.onrender.com
+        value: https://openreply-e2cs.onrender.com
       - key: RESEND_API_KEY
         sync: false
       - key: EMAIL_FROM
@@ -41,15 +41,15 @@ services:
         value: v25.0
 
   - type: worker
-    name: openreply-worker-7a3f91c2e5
+    name: openreply-worker
     runtime: node
     region: singapore
-    plan: 0.5c-512mb
-    buildCommand: npm ci && npm run db:generate
+    plan: starter
+    buildCommand: npm ci --include=dev && npm run db:generate
     startCommand: npm run worker
     envVars:
       - key: NODE_VERSION
-        value: "22.11.0"
+        value: "22.12.0"
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
@@ -63,7 +63,7 @@ services:
           property: connectionString
       - fromGroup: openreply-shared
       - key: NEXTAUTH_URL
-        value: https://openreply-7a3f91c2e5.onrender.com
+        value: https://openreply-e2cs.onrender.com
       - key: INSTAGRAM_APP_ID
         sync: false
       - key: INSTAGRAM_APP_SECRET
@@ -76,18 +76,16 @@ services:
   - type: keyvalue
     name: openreply-redis
     region: singapore
-    plan: 256mb
+    plan: free
     ipAllowList: []
     maxmemoryPolicy: noeviction
-    persistenceMode: journal-snapshot
+    persistenceMode: off
 
 databases:
   - name: openreply-postgres
     region: singapore
-    plan: basic-256mb
+    plan: free
     postgresMajorVersion: "17"
-    databaseName: openreply
-    user: openreply
 
 envVarGroups:
   - name: openreply-shared
