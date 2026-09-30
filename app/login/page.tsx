@@ -3,6 +3,7 @@ import { getI18n } from "@/lib/i18n/server";
 import { getCampaignTemplate } from "@/lib/templates/campaign-templates";
 import { DemoNotice } from "@/components/demo-notice";
 import { isPublicDemoHost } from "@/lib/env";
+import { redirect } from "next/navigation";
 
 const GITHUB_URL = "https://github.com/diwenne/openreply";
 const SETUP_DOCS_URL = `${GITHUB_URL}/blob/main/docs/setup.md`;
@@ -66,7 +67,9 @@ export default async function LoginPage({
     await signIn(EMAIL_PROVIDER_ID, {
       email: String(formData.get("email") ?? ""),
       redirectTo: callbackUrl,
+      redirect: false,
     });
+    redirect("/verify-request");
   }
 
   return (
