@@ -1,9 +1,15 @@
 import { prisma } from '@/lib/db/client';
-import { getDMQueue, MESSAGE_JOB_NAME, POSTBACK_JOB_NAME } from '@/lib/queue/client';
+import { getDMQueue, getRedisConnection, MESSAGE_JOB_NAME, POSTBACK_JOB_NAME } from '@/lib/queue/client';
 import { parseCommentEvents, parseMessageEvents, parsePostbackEvents, parseReadEvents } from '@/lib/meta/webhook';
 import { Prisma, type InstagramProvider } from '@/app/generated/prisma/client';
 
 const OPENING_DM_READ_FALLBACK_DELAY_MS = 5 * 60 * 1000;
+const OPENING_DM_READ_FALLBACK_MAX_AGE_MS = 15 * 60 * 1000;
+const READ_FALLBACK_SUPPRESSION_TTL_SECONDS = 15 * 60;
+
+function readFallbackSuppressionKey(instagramAccountId: string, userId: string) {
+  return `openreply:read-fallback-suppress:${instagramAccountId}:${userId}`;
+}
 type InstagramPayload = Parameters<typeof parseCommentEvents>[0];
 
 export async function processInstagramWebhook({ payload: incoming, provider, workspaceId }: {
@@ -100,6 +106,18 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
       const account = accountMap.get(event.instagramAccountId);
       if (!account) continue;
 
+      // Any real inbound DM means the user is actively conversing with us.
+      // Suppress delayed read-fallback reveals for a short window so an old
+      // opening DM cannot inject a stale link into a live conversation.
+      await getRedisConnection()
+        .set(
+          readFallbackSuppressionKey(event.instagramAccountId, event.senderId),
+          "1",
+          "EX",
+          READ_FALLBACK_SUPPRESSION_TTL_SECONDS
+        )
+        .catch(() => {});
+
       await queue.add(
         MESSAGE_JOB_NAME,
         {
@@ -136,10 +154,25 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
     );
 
     for (const event of readEvents) {
-      const openingLogs = await prisma.dmLog.findMany({
+      // A read receipt belongs to the conversation, not to a specific campaign.
+      // The old code looked up every SENT campaign this user had ever touched
+      // and scheduled a fallback for all of them, which could dump several old
+      // "Click and Open" messages into the same inbox at once.
+      //
+      // Only the most recent *opening-DM* send is eligible, and only while it is
+      // still fresh. Reveal/postback and DM-trigger log rows are explicitly
+      // excluded.
+      const latestOpeningLog = await prisma.dmLog.findFirst({
         where: {
           commenterId: event.userId,
           status: "SENT",
+          dmSentAt: {
+            gte: new Date(Date.now() - OPENING_DM_READ_FALLBACK_MAX_AGE_MS),
+          },
+          NOT: [
+            { commentId: { startsWith: "reveal:" } },
+            { commentId: { startsWith: "dm:" } },
+          ],
           automation: {
             isActive: true,
             openingDmEnabled: true,
@@ -148,6 +181,7 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
             },
           },
         },
+        orderBy: { dmSentAt: "desc" },
         select: {
           automation: {
             select: {
@@ -157,27 +191,23 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
         },
       });
 
-      const scheduledAutomationIds = new Set<string>();
-      for (const log of openingLogs) {
-        const automation = log.automation;
-        if (scheduledAutomationIds.has(automation.id)) continue;
-        scheduledAutomationIds.add(automation.id);
+      if (!latestOpeningLog) continue;
 
-        await queue.add(
-          POSTBACK_JOB_NAME,
-          {
-            instagramAccountId: event.instagramAccountId,
+      const automationId = latestOpeningLog.automation.id;
+      await queue.add(
+        POSTBACK_JOB_NAME,
+        {
+          instagramAccountId: event.instagramAccountId,
           accountConnectionId: accountMap.get(event.instagramAccountId)?.id,
-            userId: event.userId,
-            payload: `reveal:${automation.id}`,
-            fallback: true,
-          },
-          {
-            delay: OPENING_DM_READ_FALLBACK_DELAY_MS,
-            jobId: `read_fallback_${event.instagramAccountId}_${event.userId}_${automation.id}`,
-          }
-        );
-      }
+          userId: event.userId,
+          payload: `reveal:${automationId}`,
+          fallback: true,
+        },
+        {
+          delay: OPENING_DM_READ_FALLBACK_DELAY_MS,
+          jobId: `read_fallback_${event.instagramAccountId}_${event.userId}_${automationId}`,
+        }
+      );
     }
 
     await prisma.webhookEvent.update({
