@@ -1262,6 +1262,41 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
     return;
   }
 
+  // Multiple old campaigns can have delayed follow-up jobs for the same person.
+  // When the worker restarts, several overdue jobs may become runnable together,
+  // which previously dumped a stack of identical "Click and Open" messages into
+  // one conversation. Only the follow-up belonging to the user's most recent
+  // successful reveal/DM-trigger interaction is still relevant.
+  const latestUserActivity = await prisma.dmLog.findFirst({
+    where: {
+      instagramAccountId: automation.instagramAccountId,
+      commenterId: userId,
+      status: "SENT",
+      OR: [
+        { commentId: { startsWith: "reveal:" } },
+        { commentId: { startsWith: "dm:" } },
+      ],
+    },
+    orderBy: { dmSentAt: "desc" },
+    select: { automationId: true },
+  });
+  if (
+    latestUserActivity &&
+    latestUserActivity.automationId !== automation.id
+  ) {
+    return;
+  }
+
+  // Cross-campaign safety net: even if two relevant jobs become runnable at
+  // exactly the same time, allow at most one appreciation follow-up per user
+  // per Instagram account within an hour.
+  const followUpClaimKey =
+    `openreply:followup-sent:${instagramAccountId}:${userId}`;
+  const followUpClaim = await getRedisConnection()
+    .set(followUpClaimKey, automation.id, "EX", 60 * 60, "NX")
+    .catch(() => null);
+  if (followUpClaim !== "OK") return;
+
   let accessToken: InstagramContext;
   try {
     accessToken = await createInstagramContext(
@@ -1283,6 +1318,9 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
       }),
     });
   } catch (error) {
+    // The claim exists only to prevent concurrent duplicate sends. If the send
+    // itself failed, release it so a later legitimate follow-up is not blocked.
+    await getRedisConnection().del(followUpClaimKey).catch(() => {});
     console.log(
       "[DM Worker] Failed to send follow-up message:",
       formatError(error)
