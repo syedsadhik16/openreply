@@ -910,6 +910,40 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
   const dedupeId = `reveal:${userId}`;
 
   if (fallback) {
+    // A delayed read fallback is only valid for the user's most recent fresh
+    // opening DM. This makes old delayed jobs harmless even if they were
+    // already sitting in Redis before a deploy.
+    const suppressionKey =
+      `openreply:read-fallback-suppress:${instagramAccountId}:${userId}`;
+    const conversationIsActive = await getRedisConnection()
+      .get(suppressionKey)
+      .catch(() => null);
+    if (conversationIsActive) return;
+
+    const latestOpeningLog = await prisma.dmLog.findFirst({
+      where: {
+        instagramAccountId: automation.instagramAccountId,
+        commenterId: userId,
+        status: "SENT",
+        dmSentAt: {
+          gte: new Date(Date.now() - 15 * 60 * 1000),
+        },
+        NOT: [
+          { commentId: { startsWith: "reveal:" } },
+          { commentId: { startsWith: "dm:" } },
+        ],
+        automation: {
+          isActive: true,
+          openingDmEnabled: true,
+        },
+      },
+      orderBy: { dmSentAt: "desc" },
+      select: { automationId: true },
+    });
+    if (!latestOpeningLog || latestOpeningLog.automationId !== automation.id) {
+      return;
+    }
+
     const existingReveal = await prisma.dmLog.findUnique({
       where: {
         automationId_commentId: {
