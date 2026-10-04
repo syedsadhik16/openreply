@@ -382,7 +382,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           errorMessage: "No Instagram access token available",
         },
       });
-      continue;
+      return;
     }
 
     let accessToken: InstagramContext;
@@ -1409,9 +1409,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
 
   const dedupeId = `dm:${messageId}`;
 
-  {
-
-    const existingLog = await prisma.dmLog.findUnique({
+  const existingLog = await prisma.dmLog.findUnique({
       where: {
         automationId_commentId: {
           automationId: automation.id,
@@ -1427,7 +1425,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
       existingLog?.status === "SKIPPED_PLAN_LIMIT" ||
       existingLog?.dmDeliveryUnconfirmed
     ) {
-      continue;
+      return;
     }
 
     const logBase = {
@@ -1485,7 +1483,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
           errorMessage: "Failed to decrypt Instagram access token",
         },
       });
-      continue;
+      return;
     }
 
     // Reuse a name captured on an earlier interaction so {username} still
@@ -1534,7 +1532,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
           errorMessage: `Monthly DM limit reached (${usage.limit})`,
         },
       });
-      continue;
+      return;
     }
 
     try {
@@ -1631,7 +1629,6 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
       });
       throw error;
     }
-  }
 }
 
 async function dispatchJob(job: Job<DmQueueJob>): Promise<void> {
