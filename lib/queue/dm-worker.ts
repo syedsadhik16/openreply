@@ -1384,13 +1384,14 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   const matches = automations
     .map((automation) => ({
       automation,
-      matchResult: automation.matchAnyWord
-        ? { matched: true, matchedKeyword: null as string | null }
-        : matchKeywords(
-            messageText,
-            automation.keywords,
-            automation.wholeWordMatch
-          ),
+      // DM triggers are keyword-only. matchAnyWord belongs to the comment
+      // trigger ("any comment") and must never turn a normal Instagram
+      // conversation into an automation trigger.
+      matchResult: matchKeywords(
+        messageText,
+        automation.keywords,
+        automation.wholeWordMatch
+      ),
     }))
     .filter(({ matchResult }) => matchResult.matched);
 
