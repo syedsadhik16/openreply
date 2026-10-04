@@ -1339,6 +1339,28 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
 async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   const { instagramAccountId, messageId, messageText, senderId } = job.data;
 
+  // Meta can occasionally deliver the same inbound text more than once with
+  // different message ids. BullMQ's per-mid job id cannot dedupe that, so keep
+  // a short per-user/content guard. If Redis is temporarily unavailable, fail
+  // open and continue rather than dropping the user's message.
+  const normalizedMessageText = messageText.trim().toLowerCase().replace(/\s+/g, " ");
+  const inboundTextHash = createHash("sha256")
+    .update(normalizedMessageText)
+    .digest("hex")
+    .slice(0, 24);
+  try {
+    const inboundClaim = await getRedisConnection().set(
+      `openreply:inbound-dm:${instagramAccountId}:${senderId}:${inboundTextHash}`,
+      messageId,
+      "EX",
+      20,
+      "NX"
+    );
+    if (inboundClaim !== "OK") return;
+  } catch {
+    // Redis/BullMQ health is handled elsewhere; do not block DM handling here.
+  }
+
   const automations = await prisma.automation.findMany({
     where: {
       ...connectionScope(job.data),
@@ -1354,21 +1376,39 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
         orderBy: TRACKED_LINK_ORDER,
       },
     },
-    orderBy: { createdAt: "asc" },
+    // When campaigns overlap, the most recently created one is the user's
+    // current intent. Older campaigns must not also reply to the same DM.
+    orderBy: { createdAt: "desc" },
   });
+
+  const matches = automations
+    .map((automation) => ({
+      automation,
+      matchResult: automation.matchAnyWord
+        ? { matched: true, matchedKeyword: null as string | null }
+        : matchKeywords(
+            messageText,
+            automation.keywords,
+            automation.wholeWordMatch
+          ),
+    }))
+    .filter(({ matchResult }) => matchResult.matched);
+
+  if (matches.length === 0) return;
+
+  // Prefer an explicit keyword match over a catch-all "any word" automation.
+  // If several campaigns share the same keyword, the query order above means
+  // the newest active campaign wins. One inbound DM therefore produces at most
+  // one automation response.
+  const selected =
+    matches.find(({ matchResult }) => Boolean(matchResult.matchedKeyword)) ??
+    matches[0];
+  const automation = selected.automation;
+  const matchResult = selected.matchResult;
 
   const dedupeId = `dm:${messageId}`;
 
-  for (const automation of automations) {
-    const matchResult = automation.matchAnyWord
-      ? { matched: true, matchedKeyword: null }
-      : matchKeywords(
-          messageText,
-          automation.keywords,
-          automation.wholeWordMatch
-        );
-
-    if (!matchResult.matched) continue;
+  {
 
     const existingLog = await prisma.dmLog.findUnique({
       where: {
