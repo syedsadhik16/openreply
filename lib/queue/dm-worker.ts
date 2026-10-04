@@ -1456,7 +1456,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
           errorMessage: "No Instagram access token available",
         },
       });
-      continue;
+      return;
     }
 
     let accessToken: InstagramContext;
