@@ -1,0 +1,33 @@
+name: Keep OpenReply Awake
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/keep-openreply-awake.yml"
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping OpenReply live endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://openreply-e2cs.onrender.com/api/live"
+          for attempt in 1 2 3; do
+            code="$(curl -sS -L -o /tmp/openreply-live.txt -w "%{http_code}" --connect-timeout 15 --max-time 75 "$URL" || true)"
+            if [ "$code" = "200" ]; then
+              echo "OpenReply is awake."
+              cat /tmp/openreply-live.txt
+              exit 0
+            fi
+            echo "Attempt $attempt returned HTTP $code; retrying..."
+            sleep 10
+          done
+          echo "OpenReply did not return HTTP 200 after 3 attempts."
+          cat /tmp/openreply-live.txt 2>/dev/null || true
+          exit 1
